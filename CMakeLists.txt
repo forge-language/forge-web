@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(forge_web VERSION 0.1.3 LANGUAGES C)
+project(forge_web VERSION 0.1.4 LANGUAGES C)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(WEB REQUIRED IMPORTED_TARGET libmicrohttpd json-c libcurl openssl)
 find_package(Threads REQUIRED)

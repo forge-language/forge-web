@@ -316,22 +316,80 @@ static int json_unambiguous(const char *text, size_t size) {
     json_tokener_free(key_tok);
   return ok;
 }
+/* Validate RFC 3629 before normalizing literal Unicode for json-c. */
+static int json_utf8_valid(const unsigned char *text, size_t length) {
+  for (size_t i = 0; i < length;) {
+    unsigned char lead = text[i++];
+    if (lead < 0x80) continue;
+    size_t remaining;
+    unsigned char first_min = 0x80, first_max = 0xbf;
+    if (lead >= 0xc2 && lead <= 0xdf) remaining = 1;
+    else if (lead >= 0xe0 && lead <= 0xef) {
+      remaining = 2;
+      if (lead == 0xe0) first_min = 0xa0;
+      if (lead == 0xed) first_max = 0x9f;
+    } else if (lead >= 0xf0 && lead <= 0xf4) {
+      remaining = 3;
+      if (lead == 0xf0) first_min = 0x90;
+      if (lead == 0xf4) first_max = 0x8f;
+    } else return 0;
+    if (remaining > length - i || text[i] < first_min || text[i] > first_max) return 0;
+    for (size_t j = 1; j < remaining; j++) if (text[i+j] < 0x80 || text[i+j] > 0xbf) return 0;
+    i += remaining;
+  }
+  return 1;
+}
+
+/* json-c 0.18 strict mode on Alpine rejects literal non-ASCII strings.
+ * Feed equivalent escapes to the strict parser; retain original lexical checks. */
+static char *json_ascii(const unsigned char *text, size_t length, size_t *size) {
+  if (length > (SIZE_MAX - 1) / 3) return NULL;
+  char *ascii = malloc(length * 3 + 1);
+  if (!ascii) return NULL;
+  char *out = ascii;
+  for (size_t i = 0; i < length;) {
+    unsigned byte = text[i++];
+    if (byte < 0x80) { *out++ = (char)byte; continue; }
+    unsigned codepoint = byte & (byte < 0xe0 ? 0x1f : byte < 0xf0 ? 0x0f : 0x07);
+    unsigned count = byte < 0xe0 ? 1 : byte < 0xf0 ? 2 : 3;
+    while (count--) codepoint = (codepoint << 6) | (text[i++] & 0x3f);
+    if (codepoint > 0xffff) {
+      codepoint -= 0x10000;
+      out += snprintf(out, 7, "\\u%04x", 0xd800 + (codepoint >> 10));
+      codepoint = 0xdc00 + (codepoint & 0x3ff);
+    }
+    out += snprintf(out, 7, "\\u%04x", codepoint);
+  }
+  *out = 0;
+  *size = (size_t)(out - ascii);
+  return ascii;
+}
+
 int64_t fw_parse(const char *text) {
   if (!text)
     return 0;
   size_t n = strnlen(text, FETCH_MAX + 1);
-  if (n > FETCH_MAX)
+  if (n > FETCH_MAX || !json_utf8_valid((const unsigned char *)text, n))
     return 0;
+  size_t parsed_size = n;
+  char *ascii = NULL;
+  for (size_t i = 0; i < n; i++)
+    if ((unsigned char)text[i] >= 0x80) {
+      ascii = json_ascii((const unsigned char *)text, n, &parsed_size);
+      if (!ascii) return 0;
+      break;
+    }
+  const char *parsed = ascii ? ascii : text;
   struct json_tokener *tok = json_tokener_new_ex(32);
-  if (!tok)
-    return 0;
+  if (!tok) { free(ascii); return 0; }
   json_tokener_set_flags(tok, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
-  struct json_object *v = json_tokener_parse_ex(tok, text, (int)n + 1);
+  struct json_object *v = json_tokener_parse_ex(tok, parsed, (int)parsed_size + 1);
   size_t end = json_tokener_get_parse_end(tok);
-  while (end < n && isspace((unsigned char)text[end]))
+  while (end < parsed_size && isspace((unsigned char)parsed[end]))
     end++;
-  int ok = json_tokener_get_error(tok) == json_tokener_success && end == n;
+  int ok = json_tokener_get_error(tok) == json_tokener_success && end == parsed_size;
   json_tokener_free(tok);
+  free(ascii);
   if (ok)
     ok = json_unambiguous(text, n);
   if (!ok) {

@@ -44,6 +44,27 @@ static void json_security(void) {
   assert(!fw_parse("{\"한글\":1,\"\\ud55c\\uae00\":2}"));
   /* Shared member names in sibling objects remain legal. */
   assert(fw_parse("[{\"x\":1},{\"x\":2}]"));
+  /* Real UTF-8 in outbound README JSON failed under Alpine/json-c 0.18. */
+  int64_t unicode = fw_parse("{\"readme\":\"line\\n2.32× 한글 😀\",\"owner_id\":\"999\"}");
+  assert(unicode);
+  assert(!strcmp(fw_text(fw_get(unicode, "readme")), "line\n2.32× 한글 😀"));
+  assert(!strcmp(fw_text(fw_parse("\"é한😀\"")), "é한😀"));
+  assert(fw_parse("{\"é\":1,\"€\":2,\"😀\":3}"));
+  assert(!fw_parse("{\"é\":1,\"\\u00e9\":2}"));
+  assert(!fw_parse("{\"😀\":1,\"\\ud83d\\ude00\":2}"));
+  assert(!fw_parse("{\"한글\":\"😀\\u0000suffix\"}"));
+  assert(!fw_parse("[é]"));
+  assert(!fw_parse("{\"x\":\"😀\",}"));
+  assert(!fw_parse("{\"x\":\"😀\"} /* comment */"));
+  const char *invalid_utf8[] = {
+      "{\"x\":\"\x80\"}", "{\"x\":\"\xc0\xaf\"}",
+      "{\"x\":\"\xe0\x80\xaf\"}", "{\"x\":\"\xed\xa0\x80\"}",
+      "{\"x\":\"\xf0\x80\x80\xaf\"}", "{\"x\":\"\xf4\x90\x80\x80\"}",
+      "{\"x\":\"\xc3\"}", "{\"x\":\"\xe2\x82\"}"
+  };
+  for (size_t i = 0; i < sizeof invalid_utf8 / sizeof invalid_utf8[0]; i++)
+    assert(!fw_parse(invalid_utf8[i]));
+
 }
 static void jwt_security(void) {
   char payload[256];
